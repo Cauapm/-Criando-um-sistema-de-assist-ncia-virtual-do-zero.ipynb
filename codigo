@@ -1,0 +1,169 @@
+# Instalação das dependências
+!pip install SpeechRecognition pydub gtts wikipedia
+!apt install ffmpeg
+
+# Importação das bibliotecas
+import speech_recognition as sr
+from gtts import gTTS
+from IPython.display import Audio, Javascript, clear_output, display
+import wikipedia
+import webbrowser
+from base64 import b64decode
+from google.colab import output
+import time
+from pydub import AudioSegment
+import ipywidgets as widgets
+
+# Configuração inicial
+wikipedia.set_lang('pt')
+
+# Variáveis de controle
+gravando_ativo = False
+fluxo_midia = None
+
+# Elementos de interface
+botao_gravacao = widgets.Button(
+    description="🎤 Iniciar Gravação",
+    button_style='success',
+    layout=widgets.Layout(width='200px', height='50px')
+)
+
+botao_parar = widgets.Button(
+    description="⏹ Parar Assistente",
+    button_style='danger',
+    layout=widgets.Layout(width='200px', height='50px')
+)
+
+area_saida = widgets.Output()
+
+# Função para liberar recursos do microfone
+def liberar_microfone():
+    global fluxo_midia
+    if fluxo_midia:
+        js = Javascript('''
+            if(window.stream) {
+                window.stream.getTracks().forEach(track => track.stop());
+                window.stream = null;
+            }
+        ''')
+        display(js)
+        fluxo_midia = None
+
+# Função principal de gravação
+def gravar_audio(duracao=5):
+    js = Javascript('''
+    async function record() {
+        try {
+            window.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const recorder = new MediaRecorder(window.stream);
+            const audioChunks = [];
+
+            recorder.ondataavailable = e => audioChunks.push(e.data);
+            recorder.start();
+
+            await new Promise(resolve => {
+                recorder.onstop = resolve;
+                setTimeout(() => recorder.stop(), %d);
+            });
+
+            const audioBlob = new Blob(audioChunks);
+            const reader = new FileReader();
+            return new Promise(resolve => {
+                reader.onloadend = () => resolve(reader.result);
+                reader.readAsDataURL(audioBlob);
+            });
+        } finally {
+            if(window.stream) {
+                window.stream.getTracks().forEach(track => track.stop());
+                window.stream = null;
+            }
+        }
+    }
+    ''' % (duracao * 1000))
+
+    return js
+
+# Callback do botão de gravação
+def ao_clicar_botao_gravacao(b):
+    global gravando_ativo
+    if not gravando_ativo:
+        gravando_ativo = True
+        with area_saida:
+            clear_output()
+            print("🔴 Gravando... Fale agora!")
+            try:
+                display(gravar_audio(7))
+                dados_audio = output.eval_js('record()')
+                
+                if dados_audio:
+                    binario = b64decode(dados_audio.split(',')[1])
+                    with open('audio.webm', 'wb') as f:
+                        f.write(binario)
+                    
+                    audio = AudioSegment.from_file('audio.webm')
+                    audio.export('audio.wav', format='wav')
+                    
+                    reconhecedor = sr.Recognizer()
+                    with sr.AudioFile('audio.wav') as fonte:
+                        audio_data = reconhecedor.record(fonte)
+                        texto = reconhecedor.recognize_google(audio_data, language='pt-BR')
+                        print(f"🗣 Comando reconhecido: {texto}")
+                        processar_comando(texto.lower())
+                else:
+                    print("❌ Nenhum áudio detectado")
+
+            except Exception as e:
+                print(f"❌ Erro: {str(e)}")
+            finally:
+                gravando_ativo = False
+                liberar_microfone()
+
+# Callback do botão de parada
+def ao_clicar_botao_parar(b):
+    with area_saida:
+        print("🛑 Encerrando assistente...")
+        liberar_microfone()
+        falar("Até logo! 👋")
+        clear_output()
+        print("✅ Assistente encerrado. Recarregue a página para reiniciar.")
+
+# Função de processamento de comandos
+def processar_comando(comando):
+    try:
+        if 'wikipedia' in comando:
+            consulta = comando.split('wikipedia')[-1].strip()
+            resultado = wikipedia.summary(consulta, sentences=2)
+            print(f"📚 Wikipedia: {resultado}")
+            falar(resultado)
+            
+        elif 'youtube' in comando:
+            pesquisa = comando.split('youtube')[-1].strip()
+            webbrowser.open(f'https://www.youtube.com/results?search_query={pesquisa}')
+            print(f"▶️ YouTube: Pesquisando por {pesquisa}")
+            falar(f"Procurando no YouTube por {pesquisa}")
+            
+        elif 'farmácia' in comando or 'farmacia' in comando:
+            resposta = "📍 Farmácia mais próxima: Rua Principal, 123 (500 metros)"
+            print(resposta)
+            falar(resposta)
+            
+        elif 'parar' in comando:
+            ao_clicar_botao_parar(None)
+            
+        else:
+            resposta = "❓ Comando não reconhecido"
+            print(resposta)
+            falar(resposta)
+    except Exception as e:
+        print(f"❌ Erro no processamento: {str(e)}")
+
+# Text-to-Speech
+def falar(texto, idioma='pt'):
+    sintetizador = gTTS(text=texto, lang=idioma)
+    sintetizador.save('response.mp3')
+    display(Audio('response.mp3', autoplay=True))
+
+# Configurar interface
+botao_gravacao.on_click(ao_clicar_botao_gravacao)
+botao_parar.on_click(ao_clicar_botao_parar)
+display(widgets.VBox([botao_gravacao, botao_parar, area_saida]))
